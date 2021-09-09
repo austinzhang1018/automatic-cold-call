@@ -1,18 +1,33 @@
 # STUDENT INFO STORED AS TUPLE- NAME, EMAIL, SECTION
 # EMAIL DATA STORED AS TUPLE- UID, EMAIL, SUBJECT
 # LOG HISTORY STORED AS NESTED DICT WITH EMAIL AND SKIPS AND SWITCHES
+
+# assumptions made
+#   sections are always taught on the same day
+#   there are only two sections
+
 from datetime import date
 import os
 import imaplib
 import email
+from email.mime.text import MIMEText
 import csv
 import random
 import pickle
+import smtplib
+import ssl
 from socket import gaierror
+from math import ceil
+
+# directory of current program
+dir_path = os.path.dirname(os.path.abspath(__file__))
 
 ORG_EMAIL   = "@gmail.com"
+FROM_EMAIL  = "dartmouthecon26"
+FROM_PWD    = "economics26"
 SMTP_SERVER = "imap.gmail.com"
 SMTP_PORT   = 993
+SEND_EMAIL_PORT = 465
 
 def initialize_imap():
     mail = imaplib.IMAP4_SSL(SMTP_SERVER)
@@ -26,7 +41,7 @@ def disconnect_imap(mail):
 def get_use_data():
     num_uses = dict()
     try:
-        with open('roster.csv') as csv_file:
+        with open(dir_path + '/roster.csv') as csv_file:
             reader = csv.DictReader(csv_file)
             for row in reader:
                 skips = 0
@@ -41,14 +56,14 @@ def get_use_data():
                     if skips + switches != 0:
                         num_uses[row['email'].strip().lower()] = { 'skips': skips, 'switches': switches }
                 except KeyError:
-                    raise Exception('Make sure there are columns named name, email, section, skips, and switches')
+                    raise Exception('Make sure there are columns named name, email, section, netid, team, skips, and switches')
     except FileNotFoundError:
         raise Exception('Could not find course roster. Please place csv called roster.csv within the same folder as this program')
     return num_uses
 
 def save_uses_to_csv(num_uses, students):
-    with open('roster.csv', 'w', newline='') as f:
-        fieldnames = ['name', 'email', 'section', 'skips', 'switches']
+    with open(dir_path + '/roster.csv', 'w', newline='') as f:
+        fieldnames = ['name', 'email', 'section', 'netid', 'team', 'skips', 'switches']
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for student in students:
@@ -59,6 +74,8 @@ def save_uses_to_csv(num_uses, students):
                         'name': student[0],
                         'email': student[1],
                         'section': student[2],
+                        'netid': student[3],
+                        'team': student[4],
                         'skips': num_uses[email]['skips'],
                         'switches': num_uses[email]['switches']
                     })
@@ -69,6 +86,8 @@ def save_uses_to_csv(num_uses, students):
                     'name': student[0],
                     'email': student[1],
                     'section': student[2],
+                    'netid': student[3],
+                    'team': student[4],
                     'skips': '',
                     'switches': ''
                 })
@@ -79,7 +98,7 @@ def save_uses_to_csv(num_uses, students):
 # 2 represents a switch request
 # 3 represents a mailing sent from dartmouth but not formatted for skip or switch
 #   this can occur when a subject line is formatted incorrectly
-def filter(mail, uid):
+def filter_mail(mail, uid):
     _, byte_msg = mail.uid('fetch', uid, '(RFC822)')
     msg = email.message_from_bytes(byte_msg[0][1])
     # lowercase and remove all whitespace for formatting discrepancies
@@ -89,9 +108,9 @@ def filter(mail, uid):
     
     if '@dartmouth.edu' not in email_from.lower():
         return [0, email_from, unparsed_subject] # spam
-    elif email_subject == 'econ26skip':
+    elif email_subject == 'skip':
         return [1, email_from, unparsed_subject]
-    elif email_subject == 'econ26switch':
+    elif email_subject == 'switch':
         return [2, email_from, unparsed_subject]
     else:
         return [3, email_from, unparsed_subject]
@@ -130,6 +149,17 @@ def sort_unknowns(mail, skips, switches, unknowns):
         else:
             switches.append(unknown)
 
+def send_email(recipient_addresses, subject, message):
+    context = ssl.create_default_context()
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", SEND_EMAIL_PORT, context=context) as server:
+        formatted_msg = MIMEText(message)
+        formatted_msg['Subject'] = subject
+        formatted_msg['From'] = FROM_EMAIL
+        formatted_msg['To'] = ", ".join(recipient_addresses)
+        server.login(FROM_EMAIL, FROM_PWD)
+        server.sendmail(FROM_EMAIL, recipient_addresses, formatted_msg.as_string())
+
 def read_emails(mail):
     # select the inbox
     mail.select('inbox', readonly=False)
@@ -141,7 +171,7 @@ def read_emails(mail):
     unknowns = list()
 
     for i in data[0].split():
-        response = filter(mail, i)
+        response = filter_mail(mail, i)
         mail_type = response[0]
         # throw out mail type we don't need it
         mail_info = i, email.utils.parseaddr(response[1])[1], response[2] # uid, sender, and subject
@@ -164,7 +194,7 @@ def read_emails(mail):
 def get_course_roster():
     students = list()
     try:
-        with open('roster.csv') as csv_file:
+        with open(dir_path + '/roster.csv') as csv_file:
             reader = csv.DictReader(csv_file)
             for row in reader:
                 try:
@@ -174,9 +204,13 @@ def get_course_roster():
                         raise Exception('An email is empty please check the csv file')
                     if len(row['section'].strip()) == 0:
                         raise Exception('A section is empty please check the csv file')
+                    if len(row['netid'].strip()) == 0:
+                        raise Exception('A netid is empty please check the csv file')
+                    if len(row['team'].strip()) == 0:
+                        raise Exception('A team is empty please check the csv file')
                 except KeyError:
-                    raise Exception('Make sure there are columns named name, email, and section')
-                students.append((row['name'].strip(), row['email'].strip().lower(), row['section'].strip().lower()))
+                    raise Exception('Make sure there are columns named name, email, section, netid, team')
+                students.append((row['name'].strip(), row['email'].strip().lower(), row['section'].strip().lower(), row['netid'], row['team']))
     except FileNotFoundError:
         raise Exception('Could not find course roster. Please place csv called roster.csv within the same folder as this program')
     return students
@@ -185,8 +219,8 @@ def get_course_roster():
 # this is needed because if someone from a later section switches into an earlier section
 # we need to make sure that they don't get added to the later section
 def get_request_cache(num_uses, students, skips, switches):
-    try:
-        with open('request_cache.pickle', 'rb') as f:
+    try: 
+        with open(dir_path + '/request_cache.pickle', 'rb') as f:
             skip_cache, switch_cache, cache_date = pickle.load(f)
             if date.today() == cache_date:
                 return skip_cache, switch_cache
@@ -201,7 +235,7 @@ def get_request_cache(num_uses, students, skips, switches):
 def save_request_cache(skips, switches):        # Pickle the 'data' dictionary using the highest protocol available.
     if len(skips) == 0 and len(switches) == 0:
         return
-    with open('request_cache.pickle', 'wb') as f:
+    with open(dir_path + '/request_cache.pickle', 'wb') as f:
         pickle.dump((skips, switches, date.today()), f, pickle.HIGHEST_PROTOCOL)
         
 def save_use_data(num_uses, students, skips, switches):
@@ -272,7 +306,7 @@ def get_sections(roster):
 
 def prompt_sections(sections):
     while True:
-        prompt = 'Please type both or select one section by typing its name:'
+        prompt = 'Please type "both" or select one section by typing its name:'
         for section in sorted(sections):
             prompt += ' ' + section
         print(prompt)
@@ -326,7 +360,7 @@ def prompt_action():
             print('Unrecognized command. Valid commands are save, reset, return, and exit.')
 
 def write_list(call_list, section):
-    with open('call_list_' + section + '.csv', 'w', newline='') as f:
+    with open(dir_path + '/call_list_' + section + '.csv', 'w', newline='') as f:
         fieldnames = ['name']
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         for student in call_list:
@@ -352,6 +386,109 @@ def combine_cache(request, request_cache):
     combined.update(request_cache)
     return combined
 
+def create_zoom_groups(call_list, students, section):
+    # make teams where there are 5 people who did the readings
+    section_students = list(filter(lambda student: student[2] == section, students))
+
+    num_teams = ceil(len(section_students)/5) # aim for 5 student large groups
+
+    order = list(range(num_teams))
+    random.shuffle(order)
+    
+    rooms = [[] for _ in range(num_teams)]
+    
+    active_students = sorted(call_list, key=lambda student: int(student[4]))
+
+    room_assignment = 0
+    for active_student in active_students:
+        if room_assignment % len(rooms) == 0:
+            room_assignment = room_assignment % len(rooms)
+            random.shuffle(order)
+        # zoom uses net ids for emails so create dartmouth email through net id
+        rooms[order[room_assignment]].append(active_student[3] + '@dartmouth.edu')
+        room_assignment += 1
+
+    active_students = set(call_list)
+    
+    for student in section_students:
+        if student not in active_students: # in the section but used a skip
+            if room_assignment % len(rooms) == 0:
+                room_assignment = room_assignment % len(rooms)
+                random.shuffle(order)
+            rooms[order[room_assignment]].append(student[3] + '@dartmouth.edu')
+            room_assignment += 1
+
+    with open('rooms-' + section + '.csv', 'w') as f:
+        writer = csv.writer(f)
+        writer.writerow(('Pre-assign Room Name', 'Email Address'))
+        for idx, room in enumerate(rooms):
+            for netid_email in room:
+                writer.writerow(('room' + str(idx+1), netid_email))
+
+    print("The group file has been generated. It's named rooms-" + section + ".csv")
+        
+
+# creates breakout groups and emails each student their group
+def create_breakout_groups(call_list, students, section):
+    # make teams where there are 5 people who did the readings
+    section_students = list(filter(lambda student: student[2] == section, students))
+
+    num_teams = ceil(len(section_students)/5) # aim for 5 student large groups
+
+    order = list(range(num_teams))
+    random.shuffle(order)
+    
+    rooms = [[] for _ in range(num_teams)]
+    
+    active_students = sorted(call_list, key=lambda student: int(student[4]))
+
+    room_assignment = 0
+    for active_student in active_students:
+        if room_assignment % len(rooms) == 0:
+            room_assignment = room_assignment % len(rooms)
+            random.shuffle(order)
+        # zoom uses net ids for emails so create dartmouth email through net id
+        rooms[order[room_assignment]].append(active_student)
+        room_assignment += 1
+
+    active_students = set(call_list)
+    
+    for student in section_students:
+        if student not in active_students: # in the section but used a skip
+            if room_assignment % len(rooms) == 0:
+                room_assignment = room_assignment % len(rooms)
+                random.shuffle(order)
+            rooms[order[room_assignment]].append(student)
+            room_assignment += 1
+#                    'name': student[0],
+                    # 'email': student[1],
+                    # 'section': student[2],
+                    # 'netid': student[3],
+                    # 'team': student[4],
+    with open('groups-' + section + '.csv', 'w') as f:
+        writer = csv.writer(f)
+        writer.writerow(('Group Name', 'Name', 'Net ID', 'Email'))
+        for idx, room in enumerate(rooms):
+            for student in room:
+                writer.writerow(('room' + str(idx+1), student[0], student[3], student[1]))
+
+    print("The group file has been generated. It's named groups-" + section + ".csv")
+    
+    should_email = input('Would you like to email the groups out? Press enter to send or "no" to not send.\n').strip().lower() != 'no'
+    if should_email:
+        print("Sending breakout group emails.")
+        for idx, room in enumerate(rooms):
+            breakout_message = "Your breakout group members for the next class on or after {} are:".format(str(date.today()))
+            # construct message
+            for group_member in room:
+                breakout_message = breakout_message + "\n{}".format(group_member[0])
+            # send out message
+            recipients = list(map(lambda group_member: group_member[1], room))
+            send_email(recipients, "Econ 26 Breakout Group Assignment {}".format(str(date.today())), breakout_message)
+
+        print('Done sending emails.')
+
+            
 
 def main(given_section=None):
     # login to email
@@ -373,6 +510,9 @@ def main(given_section=None):
     random.shuffle(call_list)
     # write out csv regardless of action
     write_list(call_list, section)
+
+    create_breakout_groups(call_list, students, section)
+
     print('The cold call list has been downloaded for section ' + section + '.')
     save_request_cache(skips, switches)
     move_processed_emails(mail, students, skips, switches, section)
@@ -381,12 +521,18 @@ def main(given_section=None):
 
 
 if __name__ == '__main__':
-    try:
-        section = None
-        while True:
+    # try:
+    section = None
+    while True:
+        try:
             section = main(section)
             if not section:
+                input('Press enter to exit.')
                 exit()
-                
-    except gaierror:
-        print('Cannot connect to internet. Please check your connection and try again.')
+        except gaierror:
+            print('Cannot connect to internet. Please check your connection and try again.')
+            input('Press enter to exit.')
+            exit()
+    # except Exception as e:
+    #     print(e)
+    #     input('Press enter to exit.')
